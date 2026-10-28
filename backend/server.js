@@ -1,0 +1,17 @@
+require('dotenv').config();
+const path = require('path');
+const express = require('express');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const apiRoutes = require('./routes/api');
+const app = express();
+const PORT = Number(process.env.PORT || 3000);
+app.disable('x-powered-by');
+app.use(helmet({contentSecurityPolicy:false}));
+app.use(express.json({limit:'100kb'}));
+app.use('/api', rateLimit({windowMs:15*60*1000, limit:300, standardHeaders:true, legacyHeaders:false}));
+app.get('/api/health', (_req,res)=>res.json({ok:true,service:'RentNest API'}));
+app.use('/api', apiRoutes);
+app.use(express.static(path.join(__dirname,'..','frontend')));
+app.use((err,_req,res,_next)=>{console.error(err.message);res.status(500).json({error:'An unexpected server error occurred.'})});
+app.listen(PORT,()=>console.log(`RentNest running at http://localhost:${PORT}`));

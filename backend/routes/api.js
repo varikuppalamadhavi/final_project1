@@ -1,0 +1,22 @@
+const express = require('express');
+const supabase = require('../supabase');
+const router = express.Router();
+const tables = {properties:'properties',tenants:'tenants',leases:'leases'};
+const allowed = {
+ properties:['title','address','city','property_type','bedrooms','bathrooms','monthly_rent','status','description'],
+ tenants:['full_name','email','phone','occupation','move_in_date','notes'],
+ leases:['property_id','tenant_id','monthly_rent','start_date','end_date','status','notes']
+};
+function clean(table,body){const out={};for(const key of allowed[table])if(body[key]!==undefined)out[key]=body[key];return out}
+function validate(table,data){if(table==='properties'){if(!data.title||!data.address||!data.city) return 'Title, address and city are required.';if(data.monthly_rent!=null&&(!Number.isFinite(Number(data.monthly_rent))||Number(data.monthly_rent)<0))return 'Monthly rent must be a non-negative number.';if(data.status&&!['Available','Occupied','Maintenance'].includes(data.status))return 'Invalid property status.'}
+if(table==='tenants'){if(!data.full_name||!data.email)return 'Tenant name and email are required.';if(!/^\S+@\S+\.\S+$/.test(data.email))return 'Enter a valid email address.'}
+if(table==='leases'){if(!data.property_id||!data.tenant_id||!data.start_date||!data.end_date||data.monthly_rent==null)return 'Property, tenant, rent and lease dates are required.';if(data.end_date<data.start_date)return 'Lease end date must be on or after start date.';if(data.monthly_rent<0)return 'Rent must be non-negative.';if(data.status&&!['Active','Ended','Pending'].includes(data.status))return 'Invalid lease status.'}return null}
+function ready(res){if(!supabase){res.status(503).json({error:'Database is not configured. Copy .env.example to .env and add Supabase credentials.'});return false}return true}
+async function db(res,query){const {data,error}=await query;if(error){console.error('Database operation failed:',error.message);res.status(error.code==='23505'?409:400).json({error:error.code==='23505'?'A record with this unique value already exists.':'Database request failed. Check the submitted values and database schema.'});return null}return data}
+router.get('/dashboard',async(_req,res)=>{if(!ready(res))return;try{const [p,t,l]=await Promise.all([supabase.from('properties').select('*').order('created_at',{ascending:false}),supabase.from('tenants').select('*').order('created_at',{ascending:false}),supabase.from('leases').select('*, properties(title), tenants(full_name)').order('created_at',{ascending:false})]);const err=[p,t,l].find(x=>x.error);if(err){console.error(err.error.message);return res.status(400).json({error:'Could not load dashboard data. Verify the schema and Supabase credentials.'})}res.json({properties:p.data,tenants:t.data,leases:l.data.map(x=>({...x,property_title:x.properties?.title,tenant_name:x.tenants?.full_name}))})}catch{res.status(500).json({error:'Could not load dashboard.'})}});
+for(const table of Object.keys(tables)){const route='/'+table;
+router.get(route,async(req,res)=>{if(!ready(res))return;let q=supabase.from(table).select('*').order('created_at',{ascending:false});if(req.query.search){const safe=String(req.query.search).replace(/[%,()]/g,'');const col=table==='properties'?'title':table==='tenants'?'full_name':'status';q=q.ilike(col,`%${safe}%`)}const data=await db(res,q);if(data)res.json(data)});
+router.post(route,async(req,res)=>{if(!ready(res))return;const data=clean(table,req.body||{}),problem=validate(table,data);if(problem)return res.status(400).json({error:problem});const rows=await db(res,supabase.from(table).insert(data).select('*').single());if(rows)res.status(201).json(rows)});
+router.put(route+'/:id',async(req,res)=>{if(!ready(res))return;const data=clean(table,req.body||{});if(!Object.keys(data).length)return res.status(400).json({error:'Provide at least one field to update.'});const problem=validate(table,data);if(problem)return res.status(400).json({error:problem});const row=await db(res,supabase.from(table).update(data).eq('id',req.params.id).select('*').maybeSingle());if(row===null)return;if(!row)return res.status(404).json({error:'Record not found.'});res.json(row)});
+router.delete(route+'/:id',async(req,res)=>{if(!ready(res))return;const row=await db(res,supabase.from(table).delete().eq('id',req.params.id).select('id').maybeSingle());if(row===null)return;if(!row)return res.status(404).json({error:'Record not found.'});res.status(204).end()});}
+module.exports=router;
